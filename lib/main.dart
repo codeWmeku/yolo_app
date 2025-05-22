@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'dart:convert';
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:camera/camera.dart';
@@ -32,7 +33,7 @@ class MyApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
-      title: 'Four in One',
+      title: 'Five in One', // Updated title
       theme: ThemeData(
         primarySwatch: Colors.deepPurple,
         brightness: Brightness.light,
@@ -67,7 +68,7 @@ class _HomeScreenState extends State<HomeScreen>
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 5, vsync: this);
+    _tabController = TabController(length: 6, vsync: this); // Updated to 6 tabs
   }
 
   @override
@@ -80,18 +81,23 @@ class _HomeScreenState extends State<HomeScreen>
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text('Four in One'),
+        title: Text('Five in One'), // Updated title
         centerTitle: true,
         elevation: 0,
         bottom: TabBar(
           controller: _tabController,
           indicatorColor: Colors.white,
+          isScrollable: true, // Added to make tabs scrollable
           tabs: [
             Tab(icon: Icon(Icons.camera_alt), text: 'Camera'),
             Tab(icon: Icon(Icons.photo_library), text: 'Gallery'),
             Tab(icon: Icon(Icons.translate), text: 'Translator'),
             Tab(icon: Icon(Icons.perm_media), text: 'Multimedia'),
             Tab(icon: Icon(Icons.chat), text: 'Chatbot'),
+            Tab(
+              icon: Icon(Icons.search),
+              text: 'Detection',
+            ), // Added Detection tab
           ],
         ),
       ),
@@ -103,11 +109,307 @@ class _HomeScreenState extends State<HomeScreen>
           TTSTranslatorScreen(),
           MultimediaScreen(),
           ChatbotScreen(),
+          ObjectDetectionScreen(), // Added Object Detection screen
         ],
       ),
     );
   }
 }
+
+// Object Detection Service
+class ObjectDetectionService {
+  static const String baseUrl = 'http://192.168.100.35:8000';
+
+  static Future<ObjectDetectionResult> detectObjects(File imageFile) async {
+    try {
+      var request = http.MultipartRequest(
+        'POST',
+        Uri.parse('$baseUrl/detect-objects'),
+      );
+      request.files.add(
+        await http.MultipartFile.fromPath('file', imageFile.path),
+      );
+
+      var streamedResponse = await request.send().timeout(
+        Duration(seconds: 30),
+      );
+      var response = await http.Response.fromStream(streamedResponse);
+
+      if (response.statusCode == 200) {
+        final Map<String, dynamic> data = jsonDecode(response.body);
+        return ObjectDetectionResult.fromJson(data);
+      } else {
+        throw Exception('Detection failed: ${response.statusCode}');
+      }
+    } catch (e) {
+      throw Exception('Error detecting objects: $e');
+    }
+  }
+}
+
+// Data models for object detection
+class ObjectDetectionResult {
+  final bool success;
+  final List<Detection> detections;
+  final int totalObjects;
+  final String? annotatedImageBase64;
+
+  ObjectDetectionResult({
+    required this.success,
+    required this.detections,
+    required this.totalObjects,
+    this.annotatedImageBase64,
+  });
+
+  factory ObjectDetectionResult.fromJson(Map<String, dynamic> json) {
+    return ObjectDetectionResult(
+      success: json['success'] ?? false,
+      detections:
+          (json['detections'] as List?)
+              ?.map((item) => Detection.fromJson(item))
+              .toList() ??
+          [],
+      totalObjects: json['total_objects'] ?? 0,
+      annotatedImageBase64: json['annotated_image'],
+    );
+  }
+}
+
+class Detection {
+  final String className;
+  final double confidence;
+  final BoundingBox bbox;
+
+  Detection({
+    required this.className,
+    required this.confidence,
+    required this.bbox,
+  });
+
+  factory Detection.fromJson(Map<String, dynamic> json) {
+    return Detection(
+      className: json['class'] ?? '',
+      confidence: (json['confidence'] ?? 0).toDouble(),
+      bbox: BoundingBox.fromJson(json['bbox'] ?? {}),
+    );
+  }
+}
+
+class BoundingBox {
+  final double x1, y1, x2, y2;
+
+  BoundingBox({
+    required this.x1,
+    required this.y1,
+    required this.x2,
+    required this.y2,
+  });
+
+  factory BoundingBox.fromJson(Map<String, dynamic> json) {
+    return BoundingBox(
+      x1: (json['x1'] ?? 0).toDouble(),
+      y1: (json['y1'] ?? 0).toDouble(),
+      x2: (json['x2'] ?? 0).toDouble(),
+      y2: (json['y2'] ?? 0).toDouble(),
+    );
+  }
+}
+
+// Object Detection Screen
+class ObjectDetectionScreen extends StatefulWidget {
+  @override
+  _ObjectDetectionScreenState createState() => _ObjectDetectionScreenState();
+}
+
+class _ObjectDetectionScreenState extends State<ObjectDetectionScreen> {
+  File? _selectedImage;
+  ObjectDetectionResult? _detectionResult;
+  bool _isDetecting = false;
+  final ImagePicker _picker = ImagePicker();
+
+  Future<void> _pickImageAndDetect() async {
+    try {
+      final XFile? pickedFile = await _picker.pickImage(
+        source: ImageSource.gallery,
+        imageQuality: 80,
+      );
+
+      if (pickedFile != null) {
+        setState(() {
+          _selectedImage = File(pickedFile.path);
+          _detectionResult = null;
+          _isDetecting = true;
+        });
+
+        // Perform object detection
+        final result = await ObjectDetectionService.detectObjects(
+          _selectedImage!,
+        );
+
+        setState(() {
+          _detectionResult = result;
+          _isDetecting = false;
+        });
+
+        if (result.totalObjects == 0) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('No objects detected in the image')),
+          );
+        }
+      }
+    } catch (e) {
+      setState(() {
+        _isDetecting = false;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red),
+      );
+    }
+  }
+
+  Future<void> _captureImageAndDetect() async {
+    try {
+      final XFile? pickedFile = await _picker.pickImage(
+        source: ImageSource.camera,
+        imageQuality: 80,
+      );
+
+      if (pickedFile != null) {
+        setState(() {
+          _selectedImage = File(pickedFile.path);
+          _detectionResult = null;
+          _isDetecting = true;
+        });
+
+        // Simple loading indicator
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Processing image...')),
+        );
+
+        // Perform object detection
+        final result = await ObjectDetectionService.detectObjects(
+          _selectedImage!,
+        );
+
+        setState(() {
+          _detectionResult = result;
+          _isDetecting = false;
+        });
+      }
+    } catch (e) {
+      setState(() {
+        _isDetecting = false;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red),
+      );
+    }
+  }
+
+  Widget _buildImageView() {
+    // If no image or result yet
+    if (_selectedImage == null) {
+      return Container(
+        height: 400,
+        width: double.infinity,
+        decoration: BoxDecoration(
+          color: Colors.grey.shade200,
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Center(
+          child: Text(
+            'Take a photo to detect objects',
+            style: TextStyle(color: Colors.grey.shade600),
+          ),
+        ),
+      );
+    }
+
+    // Show the annotated image from the server
+    if (_detectionResult?.annotatedImageBase64 != null) {
+      try {
+        Uint8List bytes = base64Decode(_detectionResult!.annotatedImageBase64!);
+        return Container(
+          width: double.infinity,
+          height: 400,
+          child: Image.memory(bytes, fit: BoxFit.contain),
+        );
+      } catch (e) {
+        return Container(
+          height: 400,
+          child: Center(child: Text('Error displaying image')),
+        );
+      }
+    }
+
+    // Fallback to original image
+    return Container(
+      width: double.infinity,
+      height: 400,
+      child: _isDetecting
+          ? Center(child: CircularProgressIndicator())
+          : Image.file(_selectedImage!, fit: BoxFit.contain),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: Text('Object Detection'),
+        backgroundColor: Colors.blue,
+      ),
+      body: Column(
+        children: [
+          // Main image view
+          Expanded(
+            child: _buildImageView(),
+          ),
+          
+          // Simple controls at bottom
+          Padding(
+            padding: const EdgeInsets.all(16.0),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+              children: [
+                ElevatedButton.icon(
+                  onPressed: _isDetecting ? null : _captureImageAndDetect,
+                  icon: Icon(Icons.camera_alt),
+                  label: Text('Capture & Detect'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.blue,
+                    foregroundColor: Colors.white,
+                  ),
+                ),
+                ElevatedButton.icon(
+                  onPressed: _isDetecting ? null : _pickImageAndDetect,
+                  icon: Icon(Icons.photo_library),
+                  label: Text('Select Image'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.green,
+                    foregroundColor: Colors.white,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          
+          // Simple detection count if available
+          if (_detectionResult != null && _detectionResult!.detections.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 16.0),
+              child: Text(
+                'Found ${_detectionResult!.totalObjects} object${_detectionResult!.totalObjects != 1 ? 's' : ''}',
+                style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+// ... (Keep all your existing classes: CameraScreen, GalleryScreen, ImagePreviewScreen, etc.)
 
 class CameraScreen extends StatefulWidget {
   final CameraDescription camera;
@@ -478,36 +780,29 @@ class ChatbotScreen extends StatefulWidget {
 }
 
 class OllamaService {
-  // Using the user's server IP instead of localhost
-  static const String baseUrl =
-      'http://192.168.100.35:5000'; // Assuming serve.py runs on port 5000
+  static const String baseUrl = 'http://192.168.100.35:8000';
 
-  // Function to generate a response using the custom Python server with Mistral model
+  // Function to generate a response using your Python FastAPI server
   static Future<String> generateResponse(String prompt) async {
     try {
-      final response = await http.post(
-        Uri.parse(
-          '$baseUrl/generate',
-        ), // Adjust this endpoint to match your serve.py API
+      // Using GET request with query parameter to match your Python server's /ask endpoint
+      final response = await http.get(
+        Uri.parse('$baseUrl/ask?q=${Uri.encodeComponent(prompt)}'),
         headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({'prompt': prompt, 'max_tokens': 500}),
       );
 
       if (response.statusCode == 200) {
         final Map<String, dynamic> data = jsonDecode(response.body);
-        // Adjust the key based on your serve.py response format
-        return data['response'] ??
-            data['text'] ??
-            data['generated_text'] ??
-            'Sorry, I couldn\'t generate a response.';
+        // Your Python server returns the response in the 'response' field
+        return data['response'] ?? 'Sorry, I couldn\'t generate a response.';
       } else {
         print('Failed to get response: ${response.statusCode}');
         print('Response body: ${response.body}');
-        return 'I\'m having trouble connecting to the server. Please check if your Python server is running.';
+        return 'I\'m having trouble connecting to the server. Please check if your Python server is running on port 8000.';
       }
     } catch (e) {
       print('Error connecting to server: $e');
-      return 'Error connecting to the server at 192.168.100.35. Please make sure your Python server is running.';
+      return 'Error connecting to the server at 192.168.100.35:8000. Please make sure your Python FastAPI server is running.';
     }
   }
 }
@@ -522,7 +817,7 @@ class _ChatbotScreenState extends State<ChatbotScreen> {
     super.initState();
     // Add welcome message
     _addBotMessage(
-      'Welcome to Four in One! I\'m your virtual assistant powered by Mistral through your custom Python server. How can I help you today?',
+      'Welcome to Five in One! I\'m your virtual assistant powered by Mistral through your custom Python server. How can I help you today?',
     );
   }
 
@@ -568,12 +863,13 @@ class _ChatbotScreenState extends State<ChatbotScreen> {
   Future<void> _respondToMessage(String message) async {
     // Context about the app to help Ollama Mistral provide relevant responses
     final String appContext = """
-    You are a helpful assistant for a mobile app called 'Four in One' that has these features:
+    You are a helpful assistant for a mobile app called 'Five in One' that has these features:
     1. Camera tab - for taking photos
     2. Gallery tab - for viewing saved images
     3. Translator tab - for translating text between languages and using text-to-speech
     4. Multimedia tab - for uploading images and videos
     5. Chatbot tab - where users can ask questions and get help
+    6. Detection tab - for object detection using AI
     
     Keep responses brief, friendly and helpful. Focus on providing information about the app's features.
     """;
@@ -603,11 +899,11 @@ class _ChatbotScreenState extends State<ChatbotScreen> {
             'I\'m just a virtual assistant, but I\'m functioning well! How about you?';
       } else if (lowercaseMsg.contains('name')) {
         fallbackResponse =
-            'I\'m the YOLO Assistant, your friendly virtual helper!';
+            'I\'m the AI Assistant, your friendly virtual helper!';
       } else if (lowercaseMsg.contains('feature') ||
           lowercaseMsg.contains('do')) {
         fallbackResponse =
-            'I can help answer questions about our app features like camera, gallery, translation, and multimedia functions. What would you like to know?';
+            'I can help answer questions about our app features like camera, gallery, translation, multimedia, and object detection. What would you like to know?';
       } else if (lowercaseMsg.contains('camera')) {
         fallbackResponse =
             'Our camera feature allows you to take photos. You can access it from the Camera tab!';
@@ -622,6 +918,10 @@ class _ChatbotScreenState extends State<ChatbotScreen> {
       } else if (lowercaseMsg.contains('video')) {
         fallbackResponse =
             'You can upload and manage videos in the Multimedia tab.';
+      } else if (lowercaseMsg.contains('detect') ||
+          lowercaseMsg.contains('object')) {
+        fallbackResponse =
+            'Our object detection feature can identify objects in your photos using AI. Check the Detection tab!';
       } else if (lowercaseMsg.contains('bye') ||
           lowercaseMsg.contains('goodbye') ||
           lowercaseMsg.contains('see you')) {
@@ -635,7 +935,7 @@ class _ChatbotScreenState extends State<ChatbotScreen> {
 
       _addBotMessage(
         fallbackResponse +
-            ' (Using fallback responses as Ollama Mistral connection failed)',
+            ' (Using fallback responses as Ollama connection failed)',
       );
     }
   }
